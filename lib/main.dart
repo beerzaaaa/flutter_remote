@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter_background/flutter_background.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_static/shelf_static.dart';
@@ -9,6 +10,19 @@ import 'package:permission_handler/permission_handler.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  final androidConfig = FlutterBackgroundAndroidConfig(
+    notificationTitle: "flutter_background example app",
+    notificationText:
+        "Background notification for keeping the example app running in the background",
+    notificationImportance: AndroidNotificationImportance.normal,
+    notificationIcon: AndroidResource(
+      name: 'background_icon',
+      defType: 'drawable',
+    ), // Default is ic_launcher from folder mipmap
+  );
+
+  bool success = await FlutterBackground.initialize(androidConfig: androidConfig);
 
   final status = await Permission.manageExternalStorage.request();
   if (!status.isGranted) {
@@ -26,7 +40,9 @@ void main() async {
     serveFilesOutsidePath: true,
   );
 
-  final handler = Pipeline().addMiddleware(logRequests()).addHandler((Request request) async {
+  final handler = Pipeline().addMiddleware(logRequests()).addHandler((
+    Request request,
+  ) async {
     // Upload handler
     if (request.url.path == 'upload' && request.method == 'POST') {
       final path = request.url.queryParameters['path'] ?? '';
@@ -44,7 +60,10 @@ void main() async {
 
           if (filename != null) {
             final bytes = await part.readBytes();
-            final sanitizedFilename = filename.replaceAll(RegExp(r'[\\/]+'), '');
+            final sanitizedFilename = filename.replaceAll(
+              RegExp(r'[\\/]+'),
+              '',
+            );
             final file = File('${uploadDir.path}/$sanitizedFilename');
             await file.writeAsBytes(bytes);
           }
@@ -123,7 +142,9 @@ class MyApp extends StatelessWidget {
       home: Scaffold(
         appBar: AppBar(title: Text('Flutter File Server')),
         body: Center(
-          child: Text('เปิด browser ที่ PC หรือมือถือ แล้วเข้า http://$ip:3000'),
+          child: Text(
+            'เปิด browser ที่ PC หรือมือถือ แล้วเข้า http://$ip:3000',
+          ),
         ),
       ),
     );
