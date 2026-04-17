@@ -12,17 +12,19 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   final androidConfig = FlutterBackgroundAndroidConfig(
-    notificationTitle: "flutter_background example app",
-    notificationText:
-        "Background notification for keeping the example app running in the background",
+    notificationTitle: "File Server",
+    notificationText: "Server กำลังทำงานอยู่เบื้องหลัง",
     notificationImportance: AndroidNotificationImportance.normal,
     notificationIcon: AndroidResource(
-      name: 'background_icon',
-      defType: 'drawable',
-    ), // Default is ic_launcher from folder mipmap
+      name: 'ic_launcher',
+      defType: 'mipmap',
+    ),
   );
 
   bool success = await FlutterBackground.initialize(androidConfig: androidConfig);
+  if (success) {
+    await FlutterBackground.enableBackgroundExecution();
+  }
 
   final status = await Permission.manageExternalStorage.request();
   if (!status.isGranted) {
