@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter_background/flutter_background.dart';
+import 'package:flutter_background_service/flutter_background_service.dart';
+import 'package:flutter_background_service_android/flutter_background_service_android.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_static/shelf_static.dart';
@@ -8,31 +9,8 @@ import 'package:shelf_multipart/shelf_multipart.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-
-  final androidConfig = FlutterBackgroundAndroidConfig(
-    notificationTitle: "File Server",
-    notificationText: "Server กำลังทำงานอยู่เบื้องหลัง",
-    notificationImportance: AndroidNotificationImportance.normal,
-    notificationIcon: AndroidResource(
-      name: 'ic_launcher',
-      defType: 'mipmap',
-    ),
-  );
-
-  bool success = await FlutterBackground.initialize(androidConfig: androidConfig);
-  if (success) {
-    await FlutterBackground.enableBackgroundExecution();
-  }
-
-  final status = await Permission.manageExternalStorage.request();
-  if (!status.isGranted) {
-    openAppSettings();
-    runApp(const MyApp(ip: 'ไม่ได้รับสิทธิ์เข้าถึง Storage'));
-    return;
-  }
-
+@pragma('vm:entry-point')
+void onStart(ServiceInstance service) async {
   final rootDir = Directory('/storage/emulated/0');
   await createIndexHtml(rootDir.path);
 
@@ -130,22 +108,97 @@ void main() async {
   await shelf_io.serve(handler, InternetAddress.anyIPv4, 3000);
 
   final info = NetworkInfo();
-  final ip = await info.getWifiIP();
-  runApp(MyApp(ip: ip ?? 'ไม่พบ IP'));
+  final ip = await info.getWifiIP() ?? 'ไม่พบ IP';
+
+  service.invoke('updateIp', {'ip': ip});
+
+  if (service is AndroidServiceInstance) {
+    service.setForegroundNotificationInfo(
+      title: 'File Server',
+      content: 'http://$ip:3000',
+    );
+  }
+
+  service.on('stopService').listen((_) {
+    service.stopSelf();
+  });
 }
 
-class MyApp extends StatelessWidget {
-  final String ip;
-  const MyApp({required this.ip});
+Future<void> initializeService() async {
+  final service = FlutterBackgroundService();
+  await service.configure(
+    androidConfiguration: AndroidConfiguration(
+      onStart: onStart,
+      autoStart: false,
+      isForegroundMode: true,
+      notificationChannelId: 'file_server_channel',
+      initialNotificationTitle: 'File Server',
+      initialNotificationContent: 'Server กำลังเริ่มทำงาน...',
+      foregroundServiceNotificationId: 888,
+    ),
+    iosConfiguration: IosConfiguration(
+      autoStart: false,
+      onForeground: onStart,
+    ),
+  );
+}
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Request notification permission (Android 13+)
+  await Permission.notification.request();
+
+  final status = await Permission.manageExternalStorage.request();
+  if (!status.isGranted) {
+    openAppSettings();
+    runApp(const MyApp(initialIp: 'ไม่ได้รับสิทธิ์เข้าถึง Storage'));
+    return;
+  }
+
+  await initializeService();
+
+  final service = FlutterBackgroundService();
+  final isRunning = await service.isRunning();
+  if (!isRunning) {
+    await service.startService();
+  }
+
+  runApp(const MyApp(initialIp: 'กำลังเริ่มต้น...'));
+}
+
+class MyApp extends StatefulWidget {
+  final String initialIp;
+  const MyApp({super.key, required this.initialIp});
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  late String _ip;
+
+  @override
+  void initState() {
+    super.initState();
+    _ip = widget.initialIp;
+    FlutterBackgroundService().on('updateIp').listen((event) {
+      if (event != null && mounted) {
+        setState(() {
+          _ip = event['ip'] as String? ?? '';
+        });
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       home: Scaffold(
-        appBar: AppBar(title: Text('Flutter File Server')),
+        appBar: AppBar(title: const Text('Flutter File Server')),
         body: Center(
           child: Text(
-            'เปิด browser ที่ PC หรือมือถือ แล้วเข้า http://$ip:3000',
+            'เปิด browser ที่ PC หรือมือถือ แล้วเข้า http://$_ip:3000',
           ),
         ),
       ),
