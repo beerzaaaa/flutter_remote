@@ -1,4 +1,4 @@
-package com.example.flutter_utility
+package com.beerzaaaa.filebeam
 
 import android.app.Application
 import android.app.NotificationChannel

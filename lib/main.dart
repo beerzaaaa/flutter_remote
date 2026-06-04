@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_background_service_android/flutter_background_service_android.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:mime/mime.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shelf/shelf.dart';
@@ -18,6 +19,83 @@ import 'package:google_mobile_ads/google_mobile_ads.dart';
 // AdMob IDs — replace with real IDs before publishing to Play Store
 // ---------------------------------------------------------------------------
 const String _adUnitId = 'ca-app-pub-3940256099942544/6300978111'; // test banner
+
+// ---------------------------------------------------------------------------
+// Notification constants
+// ---------------------------------------------------------------------------
+const _statusChannelId = 'filebeam_status';
+const _statusChannelName = 'FileBeam Status';
+const _statusNotifId = 889;
+
+/// Called when user taps a notification action while app is in background.
+@pragma('vm:entry-point')
+void _onNotificationAction(NotificationResponse response) {
+  if (response.actionId == 'stop') {
+    FlutterBackgroundService().invoke('stopService');
+  }
+}
+
+Future<void> _showStatusNotification(String url) async {
+  final plugin = FlutterLocalNotificationsPlugin();
+  await plugin.initialize(
+    const InitializationSettings(
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+    ),
+    onDidReceiveBackgroundNotificationResponse: _onNotificationAction,
+  );
+
+  await plugin
+      .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>()
+      ?.createNotificationChannel(
+        const AndroidNotificationChannel(
+          _statusChannelId,
+          _statusChannelName,
+          description: 'FileBeam server status and quick actions',
+          importance: Importance.low,
+          playSound: false,
+          enableVibration: false,
+          enableLights: false,
+        ),
+      );
+
+  await plugin.show(
+    _statusNotifId,
+    'FileBeam is running',
+    url,
+    NotificationDetails(
+      android: AndroidNotificationDetails(
+        _statusChannelId,
+        _statusChannelName,
+        importance: Importance.low,
+        priority: Priority.low,
+        ongoing: true,
+        autoCancel: false,
+        playSound: false,
+        enableVibration: false,
+        styleInformation: BigTextStyleInformation(
+          'Ready to receive files over Wi-Fi\n$url\n\nOpen the URL in any browser on the same network to browse and transfer files.',
+          contentTitle: 'FileBeam is running in background',
+          summaryText: 'Tap \"Share\" to send the URL to another device',
+        ),
+        actions: const [
+          AndroidNotificationAction(
+            'stop',
+            'Stop',
+            cancelNotification: false,
+            showsUserInterface: false,
+          ),
+          AndroidNotificationAction(
+            'share',
+            'Share URL',
+            cancelNotification: false,
+            showsUserInterface: true,
+          ),
+        ],
+      ),
+    ),
+  );
+}
 
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
@@ -157,21 +235,53 @@ void onStart(ServiceInstance service) async {
   service.invoke('serviceStatus', {'running': true});
   service.invoke('serverLog', {'message': 'Server running at $url'});
 
+  // Allow UI to request current state after late attach
+  service.on('requestStatus').listen((_) {
+    service.invoke('updateIp', {'ip': ip});
+    service.invoke('serviceStatus', {'running': true});
+  });
+
   if (service is AndroidServiceInstance) {
     service.setForegroundNotificationInfo(
-      title: 'FileBeam',
-      content: url,
+      title: 'FileBeam is running in background',
+      content: 'Accepting files over Wi-Fi · $url',
     );
   }
 
-  service.on('stopService').listen((_) {
+  await _showStatusNotification(url);
+
+  service.on('stopService').listen((_) async {
     service.invoke('serviceStatus', {'running': false});
     service.invoke('serverLog', {'message': 'Server stopped'});
+    final plugin = FlutterLocalNotificationsPlugin();
+    await plugin.cancel(_statusNotifId);
     service.stopSelf();
   });
 }
 
 Future<void> initializeService() async {
+  // Create LOW-importance channel before service starts so Android uses it
+  final notifPlugin = FlutterLocalNotificationsPlugin();
+  await notifPlugin.initialize(
+    const InitializationSettings(
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+    ),
+    onDidReceiveBackgroundNotificationResponse: _onNotificationAction,
+  );
+  await notifPlugin
+      .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>()
+      ?.createNotificationChannel(
+        const AndroidNotificationChannel(
+          'file_server_channel',
+          'FileBeam Service',
+          description: 'Required to keep FileBeam running in the background',
+          importance: Importance.low,
+          playSound: false,
+          enableVibration: false,
+        ),
+      );
+
   final service = FlutterBackgroundService();
   await service.configure(
     androidConfiguration: AndroidConfiguration(
@@ -193,6 +303,22 @@ Future<void> initializeService() async {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await MobileAds.instance.initialize();
+
+  // Handle "Share URL" notification action (launches app)
+  final notifPlugin = FlutterLocalNotificationsPlugin();
+  await notifPlugin.initialize(
+    const InitializationSettings(
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+    ),
+    onDidReceiveNotificationResponse: (response) {
+      if (response.actionId == 'share') {
+        // Share action handled inside HomeScreen via system share sheet
+        SystemChannels.platform
+            .invokeMethod('SystemNavigator.pop'); // bring app to foreground
+      }
+    },
+    onDidReceiveBackgroundNotificationResponse: _onNotificationAction,
+  );
 
   await Permission.notification.request();
 
@@ -254,7 +380,7 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   late String _ip;
   bool _isRunning = false;
-  final List<String> _logs = [];
+  final List<({String msg, String time})> _logs = [];
   final _scrollController = ScrollController();
   late AnimationController _pulseController;
   BannerAd? _bannerAd;
@@ -289,8 +415,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     svc.on('serverLog').listen((event) {
       if (event != null && mounted) {
         final msg = event['message'] as String? ?? '';
+        final now = DateTime.now();
+        final time =
+            '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
         setState(() {
-          _logs.add(msg);
+          _logs.add((msg: msg, time: time));
           if (_logs.length > 200) _logs.removeAt(0);
         });
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -302,7 +431,15 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     });
 
     svc.isRunning().then((running) {
-      if (mounted) setState(() => _isRunning = running);
+      if (mounted) {
+        setState(() => _isRunning = running);
+        // If already running, request current IP (UI may have missed the initial event)
+        if (running) {
+          Future.delayed(const Duration(milliseconds: 300), () {
+            if (mounted) svc.invoke('requestStatus');
+          });
+        }
+      }
     });
   }
 
@@ -336,12 +473,16 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     if (_isRunning) {
       svc.invoke('stopService');
     } else {
-      setState(() => _logs.add('Starting server...'));
+      final now = DateTime.now();
+      final time =
+          '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
+      setState(() => _logs.add((msg: 'Starting server...', time: time)));
       await svc.startService();
     }
   }
 
   String get _serverUrl => 'http://$_ip:3000';
+  bool get _hasValidIp => RegExp(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$').hasMatch(_ip);
 
   void _copyUrl() {
     Clipboard.setData(ClipboardData(text: _serverUrl));
@@ -365,16 +506,23 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             _buildHeader(),
             Expanded(
               child: SingleChildScrollView(
-                padding: const EdgeInsets.all(16),
+                padding: EdgeInsets.only(
+                  left: 16,
+                  right: 16,
+                  top: 16,
+                  bottom: (_isBannerReady && _bannerAd != null)
+                      ? (_bannerAd!.size.height + 8).toDouble()
+                      : 16,
+                ),
                 child: Column(
                   children: [
                     _buildStatusCard(),
                     const SizedBox(height: 16),
-                    if (_isRunning && _ip.contains('.')) ...[
+                    if (_isRunning && _hasValidIp) ...[
                       _buildQrCard(),
                       const SizedBox(height: 16),
                     ],
-                    if (_isRunning && !_ip.contains('.')) ...[
+                    if (_isRunning && !_hasValidIp) ...[
                       const SizedBox(height: 8),
                       Container(
                         padding: const EdgeInsets.symmetric(vertical: 20),
@@ -441,7 +589,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 ),
               ],
             ),
-            child: const Icon(Icons.wifi_tethering_rounded, color: Colors.white, size: 24),
+            child: const Icon(Icons.send_to_mobile_rounded, color: Colors.white, size: 22),
           ),
           const SizedBox(width: 14),
           const Column(
@@ -522,27 +670,30 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             onTap: _toggleService,
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 300),
-              padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: isOn
-                      ? [const Color(0xFFFF5252), const Color(0xFFFF1744)]
-                      : [const Color(0xFF6C63FF), const Color(0xFF48CAE4)],
-                ),
-                borderRadius: BorderRadius.circular(14),
-                boxShadow: [
-                  BoxShadow(
-                    color: (isOn ? const Color(0xFFFF5252) : const Color(0xFF6C63FF))
-                        .withOpacity(0.45),
-                    blurRadius: 12,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 11),
+              decoration: isOn
+                  ? BoxDecoration(
+                      border: Border.all(color: const Color(0xFFFF5252).withOpacity(0.7), width: 1.5),
+                      borderRadius: BorderRadius.circular(14),
+                      color: const Color(0xFFFF5252).withOpacity(0.12),
+                    )
+                  : BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFF6C63FF), Color(0xFF48CAE4)],
+                      ),
+                      borderRadius: BorderRadius.circular(14),
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFF6C63FF).withOpacity(0.4),
+                          blurRadius: 10,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+                    ),
               child: Text(
                 isOn ? 'Stop' : 'Start',
-                style: const TextStyle(
-                  color: Colors.white,
+                style: TextStyle(
+                  color: isOn ? const Color(0xFFFF5252) : Colors.white,
                   fontWeight: FontWeight.bold,
                   fontSize: 14,
                 ),
@@ -599,11 +750,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               backgroundColor: Colors.white,
             ),
           ),
-          const SizedBox(height: 18),
+          const SizedBox(height: 20),
           GestureDetector(
             onTap: _copyUrl,
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
               decoration: BoxDecoration(
                 color: const Color(0xFF6C63FF).withOpacity(0.1),
                 borderRadius: BorderRadius.circular(14),
@@ -631,11 +782,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               ),
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 10),
           const Text(
             'Tap to copy URL',
             style: TextStyle(fontSize: 11, color: Color(0xFF8892A4)),
           ),
+          const SizedBox(height: 4),
         ],
       ),
     );
@@ -711,17 +863,36 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                     controller: _scrollController,
                     padding: const EdgeInsets.all(12),
                     itemCount: _logs.length,
-                    itemBuilder: (_, i) => Padding(
-                      padding: const EdgeInsets.only(bottom: 2),
-                      child: Text(
-                        '> ${_logs[i]}',
-                        style: const TextStyle(
-                          color: Color(0xFF39D353),
-                          fontSize: 11,
-                          fontFamily: 'monospace',
+                    itemBuilder: (_, i) {
+                      final entry = _logs[i];
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              entry.time,
+                              style: const TextStyle(
+                                color: Color(0xFF8892A4),
+                                fontSize: 10,
+                                fontFamily: 'monospace',
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                entry.msg,
+                                style: const TextStyle(
+                                  color: Color(0xFF39D353),
+                                  fontSize: 11,
+                                  fontFamily: 'monospace',
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
-                      ),
-                    ),
+                      );
+                    },
                   ),
           ),
         ],
@@ -776,6 +947,8 @@ Future<void> createIndexHtml(String path) async {
     .breadcrumb a{color:var(--accent);text-decoration:none;padding:2px 6px;border-radius:6px;transition:background .2s}
     .breadcrumb a:hover{background:rgba(108,99,255,.15)}
     .breadcrumb span{color:var(--muted)}
+    a{text-decoration:none;color:#6c63ff}
+    a:hover{text-decoration:underline;color:#48cae4}
     .section-title{font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.8px;margin:16px 0 10px;padding-left:4px}
     .file-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
     .file-item{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px 10px;cursor:pointer;transition:all .2s;display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center;user-select:none}

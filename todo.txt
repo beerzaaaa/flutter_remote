@@ -1,0 +1,133 @@
+ขั้นตอนที่ต้องทำก่อน publish:
+
+1. สมัคร AdMob Account
+ไปที่ admob.google.com → สมัครด้วย Google account
+
+2. สร้าง App ใน AdMob Console
+Add app → Platform: Android
+App name: FileBeam
+จะได้ App ID รูปแบบ: ca-app-pub-XXXXXXXXXXXXXXXX~XXXXXXXXXX
+3. สร้าง Ad Unit
+ใน AdMob → FileBeam app → Add ad unit → Banner
+จะได้ Ad Unit ID รูปแบบ: ca-app-pub-XXXXXXXXXXXXXXXX/XXXXXXXXXX
+4. เปลี่ยน ID ในโค้ด 2 จุด
+จุดที่ 1 — main.dart:20:
+
+จุดที่ 2 — AndroidManifest.xml:
+
+5. สิ่งที่ต้องรู้เพิ่มเติม
+เรื่อง	รายละเอียด
+Test mode	ตอน dev ใช้ test ID ได้ แต่อย่า click ad test บ่อย หรือ AdMob จะ flag account
+Review time	หลัง submit app ต้องรอ AdMob approve app ก่อน (~1-2 วัน) ถึงจะเริ่มแสดง ad จริง
+Policy	app ต้องมี Privacy Policy ที่ระบุว่าใช้ AdMob — Google บังคับ
+Fill rate	ad อาจไม่แสดงถ้า inventory ว่าง → ปกติสำหรับ app ใหม่
+6. Privacy Policy (บังคับ)
+AdMob + Play Store กำหนดให้มี Privacy Policy ก่อน publish สร้างได้ฟรีที่ privacypolicygenerator.info ระบุว่าใช้:
+
+Google AdMob (advertising)
+Local network access (file transfer)
+ต้อง host URL นี้ใส่ใน Play Console ก่อน submit
+
+
+
+-------------------------------------------------------------------------------
+ขั้นตอน Publish ไป Google Play Store
+Phase 1: เตรียม Build
+1. สร้าง Keystore (ทำครั้งเดียว — เก็บไว้ตลอดชีวิต app)
+
+⚠️ สำคัญมาก: backup ไฟล์ .jks ไว้ที่ปลอดภัย ถ้าหายจะ update app ไม่ได้อีกเลย
+
+2. ตั้งค่า Signing ใน build.gradle.kts:
+
+3. เปลี่ยน applicationId ใน build.gradle.kts จาก com.example.flutter_utility เป็น domain ตัวเอง เช่น com.yourname.filebeam
+
+4. Build App Bundle
+
+ไฟล์อยู่ที่ build/app/outputs/bundle/release/app-release.aab
+
+Phase 2: สมัคร Google Play Console
+ไปที่ play.google.com/console
+จ่ายค่าสมัครครั้งเดียว $25
+ใช้ Google account ที่ต้องการผูกกับ developer account
+Phase 3: สร้าง App ใน Play Console
+Create app → กรอก:
+
+App name: FileBeam
+Default language: English (United States)
+App or game: App
+Free or paid: Free
+Phase 4: Store Listing — สิ่งที่ต้องกรอก
+App details
+Field	ตัวอย่างที่กรอก
+App name	FileBeam - Wireless File Transfer
+Short description (80 ตัวอักษร)	Transfer files wirelessly over Wi-Fi. No cables, no cloud, no account needed.
+Full description (4000 ตัวอักษร)	ดูด้านล่าง
+Full Description (แนะนำ):
+Graphics ที่ต้องเตรียม
+ชิ้น	ขนาด	จำนวน
+App icon	512×512 PNG	1
+Feature graphic	1024×500 PNG/JPG	1
+Phone screenshots	320–3840px, min 2 sides ≥ 320px	อย่างน้อย 2 ใบ
+Phase 5: App Content (กรอกทุกอัน)
+Privacy Policy URL — บังคับ ต้อง host ไว้ที่ไหนสักที่ เช่น GitHub Pages
+
+App category: Tools
+
+Tags: file transfer, wifi, local network, file manager
+
+Content rating: กรอก questionnaire → app นี้จะได้ rating Everyone
+
+Data safety form — ระบุ:
+
+✅ Data collected: None (ถ้าไม่เก็บข้อมูล user)
+✅ Ad network: Google AdMob (ต้องระบุ)
+Phase 6: Upload & Release
+Production → Create new release
+Upload app-release.aab
+กรอก Release notes:
+Review → Submit for review
+รอ Google review 1–7 วัน (ปกติ 1–3 วัน)
+Checklist ก่อน Submit
+ applicationId ไม่ใช่ com.example.*
+ Keystore สร้างแล้วและ backup ไว้แล้ว
+ AdMob ID จริงใส่ครบทั้ง 2 จุด
+ Privacy Policy URL พร้อม
+ Screenshots อย่างน้อย 2 ใบ
+ Feature graphic 1024×500 พร้อม
+ Data safety form กรอกครบ
+ 
+ -------------------------------------------------------------------------------------
+ AdMob ต้องกรอก 2 ที่ แยกกัน
+ที่ 1: Google Play Console → Data Safety
+ระหว่างทำ Store Listing ไปที่ Policy → App content → Data safety
+
+กรอกว่า:
+
+Does your app share any of the required user data types with third parties? → Yes
+เลือก: Advertising or marketing → Advertising IDs
+Purpose: Advertising
+Third party: Google AdMob
+ที่ 2: Google Play Console → App content → Ads
+ไปที่ Policy → App content → Ads
+
+Does your app contain ads? → Yes
+Ad type: Banner ads
+Ad source: Google AdMob
+⚠️ ถ้าไม่กรอกตรงนี้ Google อาจ reject หรือ suspend app
+
+ที่ 3: AdMob Console (แยกต่างหาก)
+ไปที่ admob.google.com แล้วต้อง link app กับ Play Store ด้วย:
+
+Apps → Add app
+"Is the app listed on a supported app store?" → Yes
+ค้นหา FileBeam (ต้อง publish ขึ้น Play Store ก่อน หรือใช้ package name com.yourname.filebeam แทน)
+AdMob จะ generate App ID → เอาไปใส่ใน AndroidManifest.xml
+ลำดับที่ถูกต้อง
+1. สมัคร AdMob account
+2. สร้าง app ใน AdMob (ใส่ package name ก็พอ ยังไม่ต้อง publish) -----> com.beerzaaaa.filebeam
+3. เอา AdMob App ID → ใส่ AndroidManifest.xml
+4. สร้าง Ad Unit → เอา Ad Unit ID → ใส่ main.dart
+5. Build + Upload ขึ้น Play Console
+6. กรอก Data Safety + Ads section ใน Play Console
+7. Link app ใน AdMob Console กับ Play Store listing
+Updated todo list
