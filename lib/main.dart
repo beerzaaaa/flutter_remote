@@ -99,8 +99,39 @@ Future<void> _showStatusNotification(String url) async {
 
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
+  void log(String msg) {
+    service.invoke('serverLog', {'message': msg});
+  }
+
+  // Mutable state so requestStatus can always return current values,
+  // even if the UI subscribes before setup is complete.
+  String _currentIp = 'N/A';
+  bool _isReady = false;
+
+  // Register both listeners IMMEDIATELY — before any async work.
+  service.on('requestStatus').listen((_) {
+    service.invoke('updateIp', {'ip': _currentIp});
+    service.invoke('serviceStatus', {'running': _isReady});
+  });
+
+  service.on('stopService').listen((_) async {
+    service.invoke('serviceStatus', {'running': false});
+    log('Server stopped');
+    final plugin = FlutterLocalNotificationsPlugin();
+    await plugin.cancel(_statusNotifId);
+    service.stopSelf();
+  });
+
+  log('Initializing...');
+
   final rootDir = Directory('/storage/emulated/0');
-  await createIndexHtml(rootDir.path);
+
+  try {
+    await createIndexHtml(rootDir.path);
+    log('Index ready');
+  } catch (e) {
+    log('Warning: could not write index.html: $e');
+  }
 
   final staticHandler = createStaticHandler(
     rootDir.path,
@@ -108,9 +139,7 @@ void onStart(ServiceInstance service) async {
     serveFilesOutsidePath: true,
   );
 
-  final handler = Pipeline().addMiddleware(logRequests()).addHandler((
-    Request request,
-  ) async {
+  final handler = Pipeline().addHandler((Request request) async {
     // Upload handler
     if (request.url.path == 'upload' && request.method == 'POST') {
       final path = request.url.queryParameters['path'] ?? '';
@@ -225,21 +254,50 @@ void onStart(ServiceInstance service) async {
     return staticHandler(request);
   });
 
-  await shelf_io.serve(handler, InternetAddress.anyIPv4, 3000);
+  log('Starting HTTP server...');
+  try {
+    await shelf_io.serve(handler, InternetAddress.anyIPv4, 3000);
+    log('HTTP server listening on port 3000');
+  } catch (e) {
+    log('Failed to start server: $e');
+    service.invoke('serviceStatus', {'running': false});
+    return;
+  }
 
-  final info = NetworkInfo();
-  final ip = await info.getWifiIP() ?? 'N/A';
+  log('Detecting IP address...');
+  String ip = 'N/A';
+  try {
+    ip = await NetworkInfo()
+            .getWifiIP()
+            .timeout(const Duration(seconds: 5)) ??
+        'N/A';
+  } catch (_) {}
+
+  // Fallback: scan network interfaces
+  if (ip == 'N/A') {
+    try {
+      for (final iface in await NetworkInterface.list()) {
+        for (final addr in iface.addresses) {
+          if (!addr.isLoopback && addr.type == InternetAddressType.IPv4) {
+            ip = addr.address;
+            break;
+          }
+        }
+        if (ip != 'N/A') break;
+      }
+    } catch (_) {}
+  }
+
   final url = 'http://$ip:3000';
+  log('Server running at $url');
+
+  _currentIp = ip;
+  _isReady = true;
 
   service.invoke('updateIp', {'ip': ip});
   service.invoke('serviceStatus', {'running': true});
-  service.invoke('serverLog', {'message': 'Server running at $url'});
 
-  // Allow UI to request current state after late attach
-  service.on('requestStatus').listen((_) {
-    service.invoke('updateIp', {'ip': ip});
-    service.invoke('serviceStatus', {'running': true});
-  });
+  // requestStatus listener is already registered at top of onStart.
 
   if (service is AndroidServiceInstance) {
     service.setForegroundNotificationInfo(
@@ -249,14 +307,6 @@ void onStart(ServiceInstance service) async {
   }
 
   await _showStatusNotification(url);
-
-  service.on('stopService').listen((_) async {
-    service.invoke('serviceStatus', {'running': false});
-    service.invoke('serverLog', {'message': 'Server stopped'});
-    final plugin = FlutterLocalNotificationsPlugin();
-    await plugin.cancel(_statusNotifId);
-    service.stopSelf();
-  });
 }
 
 Future<void> initializeService() async {
@@ -302,9 +352,9 @@ Future<void> initializeService() async {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await MobileAds.instance.initialize();
 
-  // Handle "Share URL" notification action (launches app)
+  // Initialize notification plugin synchronously (fast) so action handlers
+  // are registered before the first frame.
   final notifPlugin = FlutterLocalNotificationsPlugin();
   await notifPlugin.initialize(
     const InitializationSettings(
@@ -312,20 +362,28 @@ void main() async {
     ),
     onDidReceiveNotificationResponse: (response) {
       if (response.actionId == 'share') {
-        // Share action handled inside HomeScreen via system share sheet
         SystemChannels.platform
-            .invokeMethod('SystemNavigator.pop'); // bring app to foreground
+            .invokeMethod('SystemNavigator.pop');
       }
     },
     onDidReceiveBackgroundNotificationResponse: _onNotificationAction,
   );
+
+  // Show UI immediately — don't block the first frame.
+  runApp(const FileBeamApp(initialIp: 'Starting...'));
+
+  // Heavy init runs after first frame is on screen.
+  unawaited(MobileAds.instance.initialize().then((_) =>
+    MobileAds.instance.updateRequestConfiguration(
+      RequestConfiguration(testDeviceIds: ['EMULATOR']),
+    ),
+  ));
 
   await Permission.notification.request();
 
   final status = await Permission.manageExternalStorage.request();
   if (!status.isGranted) {
     openAppSettings();
-    runApp(const FileBeamApp(initialIp: 'Storage permission denied'));
     return;
   }
 
@@ -336,8 +394,6 @@ void main() async {
   if (!isRunning) {
     await service.startService();
   }
-
-  runApp(const FileBeamApp(initialIp: 'Starting...'));
 }
 
 // ---------------------------------------------------------------------------
@@ -433,13 +489,25 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     svc.isRunning().then((running) {
       if (mounted) {
         setState(() => _isRunning = running);
-        // If already running, request current IP (UI may have missed the initial event)
+        // If already running, poll for current IP until we get a valid one.
         if (running) {
-          Future.delayed(const Duration(milliseconds: 300), () {
-            if (mounted) svc.invoke('requestStatus');
-          });
+          _pollForIp(svc);
         }
       }
+    });
+  }
+
+  void _pollForIp(FlutterBackgroundService svc) {
+    svc.invoke('requestStatus');
+    // Keep retrying every 2 s until a valid IP arrives (max 30 s).
+    int attempts = 0;
+    Timer.periodic(const Duration(seconds: 2), (timer) {
+      if (!mounted || _hasValidIp || attempts >= 15) {
+        timer.cancel();
+        return;
+      }
+      svc.invoke('requestStatus');
+      attempts++;
     });
   }
 
@@ -454,7 +522,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         },
         onAdFailedToLoad: (ad, error) {
           ad.dispose();
-          _bannerAd = null;
+          if (mounted) setState(() { _bannerAd = null; _isBannerReady = false; });
+          // Retry after 30 s (network may not be ready yet)
+          Future.delayed(const Duration(seconds: 30), () {
+            if (mounted) _loadBannerAd();
+          });
         },
       ),
     )..load();
