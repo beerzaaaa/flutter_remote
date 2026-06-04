@@ -1,7 +1,7 @@
 name: flutter_utility
-description: "A new Flutter project."
+description: "FileBeam — Wireless file transfer over local Wi-Fi."
 publish_to: 'none'
-version: 0.1.0
+version: 1.0.0+1
 
 environment:
   sdk: ^3.8.1
@@ -20,6 +20,8 @@ dependencies:
   flutter_background_service: ^5.0.5
   flutter_local_notifications: ^18.0.1
   dartssh2: ^2.0.0
+  qr_flutter: ^4.1.0
+  google_mobile_ads: ^5.1.0
 
 dev_dependencies:
   flutter_test:
