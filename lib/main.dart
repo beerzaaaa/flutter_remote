@@ -620,12 +620,15 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               ),
             ),
             if (_isBannerReady && _bannerAd != null)
-              Container(
-                color: const Color(0xFF1A1A2E),
-                height: _bannerAd!.size.height.toDouble(),
-                width: double.infinity,
-                alignment: Alignment.center,
-                child: AdWidget(ad: _bannerAd!),
+              SafeArea(
+                top: false,
+                child: Container(
+                  color: const Color(0xFF1A1A2E),
+                  height: _bannerAd!.size.height.toDouble(),
+                  width: double.infinity,
+                  alignment: Alignment.center,
+                  child: AdWidget(ad: _bannerAd!),
+                ),
               ),
           ],
         ),
