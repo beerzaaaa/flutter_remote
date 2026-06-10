@@ -14,6 +14,8 @@ import 'package:shelf_multipart/shelf_multipart.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
+import 'package:archive/archive_io.dart';
+import 'package:path_provider/path_provider.dart';
 
 // ---------------------------------------------------------------------------
 // AdMob IDs — replace with real IDs before publishing to Play Store
@@ -249,6 +251,58 @@ void onStart(ServiceInstance service) async {
           'Accept-Ranges': 'bytes',
         },
       );
+    }
+
+    // ZIP folder download
+    if (request.url.path == 'zip' && request.method == 'GET') {
+      final queryPath = request.url.queryParameters['path'] ?? '';
+      final normalizedPath =
+          Uri.parse('${rootDir.path}/$queryPath').normalizePath().path;
+      if (!normalizedPath.startsWith(rootDir.path)) {
+        return Response.forbidden('Access denied');
+      }
+      final targetDir = Directory(normalizedPath);
+      if (!await targetDir.exists()) {
+        return Response.notFound('Directory not found');
+      }
+      final folderName = queryPath.isEmpty
+          ? 'files'
+          : queryPath.split('/').last.replaceAll(RegExp(r'[^\w\-]'), '_');
+
+      Directory tempDir;
+      try {
+        tempDir = await getTemporaryDirectory();
+      } catch (_) {
+        tempDir = Directory('${rootDir.path}/.tmp');
+        await tempDir.create(recursive: true);
+      }
+
+      final zipPath =
+          '${tempDir.path}/fb_${DateTime.now().millisecondsSinceEpoch}.zip';
+      final zipFile = File(zipPath);
+
+      try {
+        final encoder = ZipFileEncoder();
+        encoder.create(zipPath);
+        encoder.addDirectory(targetDir, includeDirName: true);
+        await encoder.close();
+
+        final fileSize = await zipFile.length();
+        return Response.ok(
+          _streamAndDelete(zipFile),
+          headers: {
+            'Content-Type': 'application/zip',
+            'Content-Length': '$fileSize',
+            'Content-Disposition':
+                'attachment; filename="$folderName.zip"',
+          },
+        );
+      } catch (e) {
+        try {
+          await zipFile.delete();
+        } catch (_) {}
+        return Response.internalServerError(body: 'Error creating zip: $e');
+      }
     }
 
     return staticHandler(request);
@@ -987,6 +1041,17 @@ String? _extractFilename(String? contentDisposition) {
   return match?.group(1);
 }
 
+/// Streams [file] to the caller and deletes it once the stream is done.
+Stream<List<int>> _streamAndDelete(File file) async* {
+  try {
+    yield* file.openRead();
+  } finally {
+    try {
+      await file.delete();
+    } catch (_) {}
+  }
+}
+
 Future<void> createIndexHtml(String path) async {
   final file = File('$path/index.html');
   await file.writeAsString(r'''<!DOCTYPE html>
@@ -1035,6 +1100,9 @@ Future<void> createIndexHtml(String path) async {
     .empty{text-align:center;color:var(--muted);padding:48px 20px;font-size:14px}
     .empty-icon{font-size:48px;margin-bottom:12px}
     @media(max-width:480px){.file-grid{grid-template-columns:repeat(auto-fill,minmax(110px,1fr))}.container{padding:14px}}
+    .folder-item{position:relative}
+    .zip-btn{position:absolute;top:5px;right:5px;background:rgba(108,99,255,.15);border:1px solid rgba(108,99,255,.35);color:var(--accent2);border-radius:7px;width:24px;height:24px;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;opacity:.7;transition:opacity .2s,background .2s}
+    .zip-btn:hover{opacity:1;background:rgba(108,99,255,.35)}
   </style>
 </head>
 <body>
@@ -1094,8 +1162,10 @@ function loadFiles(){
       var g=document.createElement('div');g.className='file-grid';
       data.folders.forEach(function(f){
         var name=f.split('/').pop();
-        var item=document.createElement('div');item.className='file-item';
-        item.innerHTML='<div class="file-icon">&#128193;</div><div class="file-name">'+name+'</div>';
+        var item=document.createElement('div');item.className='file-item folder-item';
+        var zipHref='/zip?path='+encodeURIComponent(f);
+        item.innerHTML='<button class="zip-btn" title="Download as ZIP">&#8595;</button><div class="file-icon">&#128193;</div><div class="file-name">'+name+'</div>';
+        item.querySelector('.zip-btn').addEventListener('click',function(e){e.stopPropagation();window.location.href=zipHref;});
         item.onclick=function(){currentPath=f;loadFiles();};
         g.appendChild(item);
       });
